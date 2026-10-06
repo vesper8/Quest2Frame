@@ -238,6 +238,41 @@ NDK. New builds can be rebuilt with the option off using their saved original
 APK. If the original APK already contains the fix, open a pre-fix build to
 remove it. Existing game data and saves are retained by APK-only installation.
 
+### Optional: open-source OpenXR dispatcher
+
+OVR Port's runtime bundle puts a closed OpenXR dispatcher into every converted
+APK as `lib/<abi>/libopenxr_loader.so`. **Open-source OpenXR dispatcher** under
+**Review & convert** (or per-game batch settings) replaces it with
+[openxr-dispatcher-open](https://github.com/Molier/openxr-dispatcher-open)
+(MIT), a drop-in replacement with the same exports. It is off by default; with
+it off, conversion is unchanged.
+
+The app builds the dispatcher from a local checkout with the same NDK compiler
+as the Frame adapter. No binary is downloaded and CMake is not required:
+
+```powershell
+git clone https://github.com/Molier/openxr-dispatcher-open tools\openxr-dispatcher-open
+```
+
+To use a checkout elsewhere, set `$env:OPENXR_DISPATCHER_SOURCE` before
+launching the app. Without the NDK compiler, the app uses the checkout's
+`prebuilt\<abi>\libopenxr_loader.so` built by its `build.sh` (Linux/WSL).
+
+After OVR Port's conversion and before signing, only `libopenxr_loader.so` is
+replaced, for each ABI the APK contains (arm64-v8a and armeabi-v7a are
+supported; other ABIs are refused). The vendor loaders, the Frame adapter in
+the generic-loader slot, and OVR Port's config stay as they are. The activity
+log names each replaced file and its hash. With the black-screen fix, the
+runtime inside that adapter is replaced instead. The dispatcher reads OVR
+Port's config file and properties and logs every gap between what the game asks
+and what the runtime offers under the `OpenXRDispatch` tag in Android logs,
+next to the adapter's `FrameBridge` lines.
+
+**Rebuild APK only** can switch it on for an existing build. A build converted
+with the option on cannot switch back; reconvert instead. **Reported headset**
+must stay **Default**, because those overrides patch OVR Port's closed
+dispatcher.
+
 This repository contains our Python/C/shell source and documentation. It does **not** distribute Quest games, patched APKs, game saves, Steam artwork, signing keys, device configuration, downloaded OVR Port binaries, Android SDK/NDK, Java, Lepton, or the locally built Windows executable. `.gitignore` protects these local files without deleting them.
 
 The existing workspace is configured to run the app. A fresh clone needs the external tools described in the app guide; this is not a self-contained installer. To compile the adapter from a fresh clone, run `./build-native.ps1` with an installed Android NDK. That script fetches the two OpenXR headers from a pinned upstream revision and verifies their SHA-256 hashes.

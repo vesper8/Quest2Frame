@@ -17,6 +17,10 @@ The Python app, native adapter implementation, launcher template, build script, 
 
 The adapter uses `openxr.h` and `openxr_platform_defines.h` from [KhronosGroup/OpenXR-SDK](https://github.com/KhronosGroup/OpenXR-SDK), pinned by the build script to revision `f2448a8797c85814aa892efc1ab8707900fbcc78`. Each header bears **Apache-2.0 OR MIT** and its Khronos copyright notice. For this project's header use, choose the **MIT** alternative. The upstream MIT license is preserved in [LICENSES/OpenXR-MIT.txt](LICENSES/OpenXR-MIT.txt). Preserve the header notices and that license when distributing header copies or builds incorporating them. The headers themselves are downloaded into an ignored build-dependency directory, not committed.
 
+## openxr-dispatcher-open (optional)
+
+The optional **Open-source OpenXR dispatcher** setting builds [openxr-dispatcher-open](https://github.com/Molier/openxr-dispatcher-open) from a checkout the user clones under ignored `tools/` and puts it into that user's converted APK in place of OVR Port's closed `libopenxr_loader.so`. It is **MIT** licensed ([LICENSE](https://github.com/Molier/openxr-dispatcher-open/blob/main/LICENSE)) and bundles cJSON (MIT) and Khronos OpenXR headers (Apache-2.0 OR MIT), each with its own license file in that repository. No source or binary of it is committed here. Builds incorporating it must keep those notices.
+
 ## Python and native packaging dependencies
 
 Only dependency declarations are committed, not these packages. The versions below describe the existing local build, not a complete future release SBOM.

@@ -94,6 +94,36 @@ def check_headset_build(game, headset=None):
     if selected != game.get('built_headset', 'Default'):
         raise ValueError('Reported headset changed. Use Rebuild APK only before installing or applying settings.')
 
+# openxr-dispatcher-open (MIT) targets; its start-up log line doubles as a build marker.
+DISPATCHER_TARGETS = {'arm64-v8a':['--target=aarch64-linux-android29'],
+                      'armeabi-v7a':['--target=armv7a-linux-androideabi29', '-mthumb']}
+DISPATCHER_MARKER = b'open dispatcher %s: next loader'
+
+def dispatcher_source():
+    return Path(os.environ.get('OPENXR_DISPATCHER_SOURCE') or ROOT / 'tools/openxr-dispatcher-open')
+
+def dispatcher_entries(names):
+    """Map each OVR Port dispatcher in an APK to its ABI; a wrapped arm64 runtime keeps its adapter."""
+    entries = {}
+    for name in names:
+        match = re.fullmatch(r'lib/([^/]+)/libopenxr_loader\.so', name)
+        if not match: continue
+        wrapped = f'lib/{match[1]}/libq2f_original.so'
+        entries[wrapped if wrapped in names else name] = match[1]
+    return entries
+
+def open_dispatcher_value(game):
+    return bool(game.get('open_dispatcher', False))
+
+def check_dispatcher_build(game, selected=None):
+    built = bool(game.get('built_open_dispatcher', False))
+    if (open_dispatcher_value(game) if selected is None else bool(selected)) != built:
+        raise ValueError('OpenXR dispatcher changed. Use Rebuild APK only before installing or applying settings.')
+
+def check_dispatcher_headset(open_dispatcher, headset):
+    if open_dispatcher and headset_value(headset) != 'Default':
+        raise ValueError("Reported headset overrides patch OVR Port's dispatcher. Keep Default with the open-source OpenXR dispatcher.")
+
 def digest(path):
     with open(path, 'rb') as stream: return hashlib.file_digest(stream, 'sha256').hexdigest()
 
@@ -251,10 +281,52 @@ class Bridge:
         clangs = sorted(sdk.glob('ndk/*/toolchains/llvm/prebuilt/windows-x86_64/bin/clang.exe'), reverse=True)
         return java, jar, pick('build-tools/*/aapt.exe').parent, clangs[0] if clangs else None
 
-    def convert(self, backup, title, scale=100, controllers=True, foveation=True, steam_id='', refresh_rate=0, headset='Default', rect_fix=False):
+    def open_dispatcher(self, names, output):
+        """Build openxr-dispatcher-open from a local checkout; return replacement APK entries."""
+        entries = dispatcher_entries(names)
+        if not entries: raise RuntimeError('OVR Port output has no libopenxr_loader.so; open dispatcher not applied')
+        source = dispatcher_source()
+        if not (source / 'src/next.c').exists():
+            raise RuntimeError(f'Open-source OpenXR dispatcher not found at {source}. Clone https://github.com/Molier/openxr-dispatcher-open there or set OPENXR_DISPATCHER_SOURCE.')
+        clang = self.toolchain()[3]
+        libraries = {}
+        for abi in sorted(set(entries.values())):
+            if abi not in DISPATCHER_TARGETS: raise RuntimeError(f'Open-source OpenXR dispatcher does not support {abi}; nothing was replaced.')
+            library = Path(output) / 'open-dispatcher' / abi / 'libopenxr_loader.so'
+            library.parent.mkdir(parents=True, exist_ok=True)
+            if clang:
+                # Flags of its CMakeLists.txt plus the NDK toolchain defaults; no CMake or Ninja needed.
+                self.run([clang, *DISPATCHER_TARGETS[abi], f'--sysroot={clang.parent.parent / "sysroot"}',
+                          '-shared', '-fPIC', '-O2', '-std=gnu11', '-fvisibility=hidden', '-DANDROID', '-DNDEBUG',
+                          '-ffunction-sections', '-fdata-sections', '-fstack-protector-strong', '-D_FORTIFY_SOURCE=2',
+                          '-Wall', '-Wextra', '-Wno-unused-parameter', '-Wno-format-truncation',
+                          '-I', source / 'vendor', '-I', source / 'src',
+                          *sorted((source / 'src').glob('*.c')), source / 'src/third_party/cJSON.c',
+                          '-Wl,-soname,libopenxr_loader.so', '-Wl,-Bsymbolic', '-Wl,--no-undefined', '-Wl,--gc-sections',
+                          '-Wl,--build-id=sha1', '-Wl,-z,max-page-size=16384', '-Wl,-s', '-llog', '-ldl', '-lm', '-o', library])
+            else:
+                prebuilt = source / 'prebuilt' / abi / 'libopenxr_loader.so'
+                if not prebuilt.exists(): raise RuntimeError(f'Android NDK compiler missing and no {prebuilt}; run its build.sh first.')
+                shutil.copy2(prebuilt, library)
+            data = library.read_bytes()
+            if not data.startswith(b'\x7fELF') or DISPATCHER_MARKER not in data:
+                raise RuntimeError(f'{library} is not an openxr-dispatcher-open build')
+            libraries[abi] = data
+        replacements = {}
+        for name, abi in entries.items():
+            data = libraries[abi]
+            if name.endswith('/libq2f_original.so'):
+                from build_passthrough import rename_soname
+                data = rename_soname(data)
+            replacements[name] = data
+            self.log(f'Open-source OpenXR dispatcher replaces {name} (sha256 {hashlib.sha256(data).hexdigest()[:16]})')
+        return replacements
+
+    def convert(self, backup, title, scale=100, controllers=True, foveation=True, steam_id='', refresh_rate=0, headset='Default', rect_fix=False, open_dispatcher=False):
         self.progress('Conversion 1/7: inspecting APK')
         refresh_rate = refresh_value(refresh_rate)
         headset = headset_value(headset)
+        check_dispatcher_headset(open_dispatcher, headset)
         backup = Path(backup)
         java, jar, build, clang = self.toolchain()
         source_apk = backup / 'base.apk'
@@ -293,12 +365,16 @@ class Bridge:
         original = prefix + 'libopenxr_loader_generic.so'
         with zipfile.ZipFile(folder / 'ovrport.apk') as src, zipfile.ZipFile(folder / 'unsigned.apk', 'w', zipfile.ZIP_DEFLATED) as dst:
             if original not in src.namelist(): raise RuntimeError('OVR Port output has no generic loader; incompatible game/profile')
+            dispatchers = {}
+            if open_dispatcher:
+                self.progress('Conversion 3/7: building open-source OpenXR dispatcher')
+                dispatchers = self.open_dispatcher(src.namelist(), folder)
             total = sum(item.file_size for item in src.infolist() if item.filename != original and not item.filename.startswith('META-INF/'))
             completed = 0
             self.progress('Conversion 4/7: repacking APK', 0)
             for item in src.infolist():
                 if item.filename == original or item.filename.startswith('META-INF/'): continue
-                dst.writestr(item, src.read(item.filename))
+                dst.writestr(item, dispatchers[item.filename] if item.filename in dispatchers else src.read(item.filename))
                 completed += item.file_size
                 self.progress('Conversion 4/7: repacking APK', 100 * completed / max(total,1))
             dst.writestr(prefix + 'libopenxr_loader_original.so', src.read(original))
@@ -316,20 +392,23 @@ class Bridge:
                     'backup': str(backup.resolve()), 'scale': float(scale), 'controllers': controllers,
                     'foveation': foveation, 'steam_id': str(steam_id), 'ovrport': LIB_VERSION, 'refresh_rate': refresh_rate,
                     'sha256': digest(folder / 'game.apk')}
+        if open_dispatcher: manifest.update(open_dispatcher=True, built_open_dispatcher=True)
         write_json(folder / 'game.json', manifest)
         if headset != 'Default' or rect_fix:
-            return self.rebuild_apk(folder, title, scale, controllers, foveation, steam_id, refresh_rate, headset, rect_fix)
+            return self.rebuild_apk(folder, title, scale, controllers, foveation, steam_id, refresh_rate, headset, rect_fix, open_dispatcher)
         self.progress('Conversion complete', 100)
         self.log('Conversion complete. Wake Frame for Wi-Fi installation, or connect it by USB, then press Install.')
         return folder
 
     def rebuild_apk(self, folder, title, scale=100, controllers=True, foveation=True,
-                    steam_id='', refresh_rate=0, headset='Default', rect_fix=None):
+                    steam_id='', refresh_rate=0, headset='Default', rect_fix=None, open_dispatcher=None):
         """Repack a converted APK; reuse OBBs and preserve game-specific native fixes."""
         folder = Path(folder)
         game = json.loads((folder/'game.json').read_text())
         rect_fix = rect_fix_value(game) if rect_fix is None else bool(rect_fix)
+        open_dispatcher = open_dispatcher_value(game) if open_dispatcher is None else bool(open_dispatcher)
         headset = headset_value(headset)
+        check_dispatcher_headset(open_dispatcher, headset)
         config = settings_text(scale, controllers, foveation, refresh_rate)
         if digest(folder/'game.apk') != game['sha256']:
             raise ValueError('Source APK checksum mismatch; rebuild refused')
@@ -350,6 +429,12 @@ class Bridge:
             runtime = prefix+('libq2f_original.so' if prefix+'libq2f_original.so' in src.namelist() else 'libopenxr_loader.so')
             replacements = {runtime: patch_runtime(src.read(runtime), headset),
                             prefix+'libframe_settings.so': config.encode()}
+            has_open = DISPATCHER_MARKER in src.read(runtime)
+            if has_open and not open_dispatcher:
+                raise ValueError("This original build already includes the open-source OpenXR dispatcher. Reconvert to use OVR Port's dispatcher.")
+            if open_dispatcher and not has_open:
+                self.progress('APK rebuild: building open-source OpenXR dispatcher')
+                replacements.update(self.open_dispatcher(src.namelist(), output))
             existing = src.read(prefix+'libopenxr_loader_generic.so')
             if refresh_value(refresh_rate) and b'Q2F_REFRESH_RATE_V1' not in existing:
                 # Never silently replace a custom native fix to obtain a new capability.
@@ -398,6 +483,9 @@ class Bridge:
                     rect_fix=rect_fix, built_rect_fix=rect_fix,
                     identity_base_apk=str(baseline.resolve()), identity_base_sha256=baseline_hash,
                     update_source_sha256=game.get('update_source_sha256', game['sha256']))
+        if open_dispatcher: game.update(open_dispatcher=True, built_open_dispatcher=True)
+        else:
+            for key in ('open_dispatcher', 'built_open_dispatcher'): game.pop(key, None)
         write_json(output/'game.json', game)
         if (folder/'deployment.json').exists(): shutil.copy2(folder/'deployment.json', output/'deployment.json')
         self.progress('APK-only rebuild complete; OBBs unchanged', 100)
@@ -410,7 +498,7 @@ class Bridge:
         """Update one existing deployment, without traversing/copying OBBs or saves."""
         if transport not in ('usb', 'wifi'): raise ValueError('Select USB or Wi-Fi installation')
         folder = Path(folder); game = json.loads((folder/'game.json').read_text())
-        check_headset_build(game); check_rect_build(game); check_refresh_adapter(folder, game.get('refresh_rate', 0))
+        check_headset_build(game); check_rect_build(game); check_dispatcher_build(game); check_refresh_adapter(folder, game.get('refresh_rate', 0))
         package = valid_package(game['package'])
         deployment = json.loads((folder/'deployment.json').read_text())
         if deployment['package'] != package: raise ValueError('Deployment/package mismatch')
@@ -585,6 +673,7 @@ class Bridge:
         folder = Path(folder); game = json.loads((folder / 'game.json').read_text())
         check_headset_build(game)
         check_rect_build(game)
+        check_dispatcher_build(game)
         check_refresh_adapter(folder, game.get('refresh_rate', 0))
         package = valid_package(game['package']); backup = Path(game['backup'])
         obb_source = backup / 'obb'
@@ -720,13 +809,15 @@ class Bridge:
             if service: self.remote(client, 'systemctl --user start steam.service', check=False)
             else: self.remote(client, 'systemd-run --user --collect --unit=quest-frame-steam-' + str(int(time.time())) + ' /usr/bin/steam', check=False)
 
-    def update_settings(self, folder, client, scale, controllers, foveation, refresh_rate=0, headset=None, rect_fix=None):
+    def update_settings(self, folder, client, scale, controllers, foveation, refresh_rate=0, headset=None, rect_fix=None, open_dispatcher=None):
         folder = Path(folder)
         check_refresh_adapter(folder, refresh_rate)
         if headset is not None:
             check_headset_build(json.loads((folder/'game.json').read_text()), headset)
         if rect_fix is not None:
             check_rect_build(json.loads((folder/'game.json').read_text()), rect_fix)
+        if open_dispatcher is not None:
+            check_dispatcher_build(json.loads((folder/'game.json').read_text()), open_dispatcher)
         deployment = json.loads((folder / 'deployment.json').read_text())
         package = valid_package(deployment['package'])
         base=self.deployment_base(client,deployment)

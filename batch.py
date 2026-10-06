@@ -88,10 +88,11 @@ class BatchWindow(tk.Toplevel):
             ttk.Entry(form,textvariable=self.values[name],width=45).grid(row=row,column=1,sticky='ew',pady=3)
         form.columnconfigure(1,weight=1)
         self.controllers=tk.BooleanVar();self.foveation=tk.BooleanVar()
-        self.rect_fix=tk.BooleanVar(value=False)
+        self.rect_fix=tk.BooleanVar(value=False);self.open_dispatcher=tk.BooleanVar(value=False)
         ttk.Checkbutton(form,text='Physical controllers',variable=self.controllers).grid(row=1,column=2,padx=10)
         ttk.Checkbutton(form,text='Quest foveation fix',variable=self.foveation).grid(row=2,column=2,padx=10)
         ttk.Checkbutton(form,text='Fix black screen (rebuild required)',variable=self.rect_fix).grid(row=5,column=2,padx=10)
+        ttk.Checkbutton(form,text='Open-source OpenXR dispatcher',variable=self.open_dispatcher).grid(row=6,column=2,padx=10)
         ttk.Button(form,text='Save game settings',command=self.save_editor).grid(row=3,column=2,padx=10)
         ttk.Button(form,text='Find artwork by title',command=self.search_art).grid(row=4,column=0,pady=5)
         self.matches=ttk.Combobox(form,state='readonly',width=50);self.matches.grid(row=4,column=1,columnspan=2,sticky='ew')
@@ -134,6 +135,7 @@ class BatchWindow(tk.Toplevel):
         for k,v in self.values.items():v.set(str((item['options'].get(k) or 'Default') if k in ('refresh_rate','headset') else item['options'][k]))
         self.controllers.set(item['options']['controllers']);self.foveation.set(item['options']['foveation'])
         self.rect_fix.set(item['options'].get('rect_fix',False))
+        self.open_dispatcher.set(item['options'].get('open_dispatcher',False))
         self.candidates=item.get('candidates',[])
         self.matches.configure(values=[f"{m['title']} — {m['id']}" for m in self.candidates])
         self.matches.set('Choose a candidate and Save' if self.candidates else 'Enter a title to search for artwork')
@@ -147,7 +149,9 @@ class BatchWindow(tk.Toplevel):
             opts['headset']=headset_value(opts['headset'])
             settings_text(opts['scale'],refresh_rate=opts['refresh_rate'])
             if opts['steam_id'] and not opts['steam_id'].isdigit():raise ValueError('Steam App ID must be numeric')
-            opts.update(controllers=self.controllers.get(),foveation=self.foveation.get(),rect_fix=self.rect_fix.get())
+            opts.update(controllers=self.controllers.get(),foveation=self.foveation.get(),rect_fix=self.rect_fix.get(),open_dispatcher=self.open_dispatcher.get())
+            from bridge import check_dispatcher_headset
+            check_dispatcher_headset(opts['open_dispatcher'],opts['headset'])
         except ValueError as exc:messagebox.showerror('Invalid settings',str(exc),parent=self);return False
         self.items[self.active]['options']=opts;self.save();return True
     def search_art(self):
@@ -178,8 +182,9 @@ class BatchWindow(tk.Toplevel):
                 self.items.append(dict(package=package,options={k:game[k] for k in ('title','scale','steam_id','controllers','foveation')},build=str(Path(path).parent),backup=game['backup'],status='Ready',error=''))
                 self.items[-1]['options']['refresh_rate']=game.get('refresh_rate',0)
                 self.items[-1]['options']['headset']=game.get('headset','Default')
-                from bridge import rect_fix_value
+                from bridge import rect_fix_value, open_dispatcher_value
                 self.items[-1]['options']['rect_fix']=rect_fix_value(game)
+                self.items[-1]['options']['open_dispatcher']=open_dispatcher_value(game)
             except Exception as exc:messagebox.showerror('Invalid manifest',str(exc),parent=self)
         self.refresh();self.save()
     def start(self,action):

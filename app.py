@@ -183,6 +183,7 @@ class Wizard(DesktopUI, tk.Tk):
         from headset_profile import headset_value
         options['headset'] = headset_value(self.vars['headset'].get())
         options['rect_fix'] = self.rect_fix.get()
+        options['open_dispatcher'] = self.open_dispatcher.get()
         settings_text(options['scale'], options['controllers'], options['foveation'], options['refresh_rate'])
         return options
 
@@ -199,8 +200,9 @@ class Wizard(DesktopUI, tk.Tk):
         for k in ('title','scale','steam_id'):self.vars[k].set(str(game[k]))
         self.vars['refresh_rate'].set(str(game.get('refresh_rate') or 'Default'))
         self.vars['headset'].set(game.get('headset','Default'))
-        from bridge import rect_fix_value
+        from bridge import rect_fix_value, open_dispatcher_value
         self.rect_fix.set(rect_fix_value(game))
+        self.open_dispatcher.set(open_dispatcher_value(game))
         self.controllers.set(game['controllers']);self.foveation.set(game['foveation'])
         self.ready.set(game['title']+' is ready. Choose Wi-Fi or USB installation.');self.selected.set(game['package']);self.tabs.select(3)
         self.status.set('3 · Conversion ready. Wake Frame, then Install.')
@@ -231,10 +233,11 @@ class Wizard(DesktopUI, tk.Tk):
         if not self.build or not (self.build/'deployment.json').exists():
             messagebox.showinfo('Existing installation required','Open or rebuild an already-installed game. Use the full installer for its first installation.');return
         try:
-            from bridge import check_headset_build, check_rect_build
+            from bridge import check_headset_build, check_rect_build, check_dispatcher_build
             game=json.loads((self.build/'game.json').read_text());opts=self.options()
             check_headset_build(game,opts['headset'])
             check_rect_build(game,opts['rect_fix'])
+            check_dispatcher_build(game,opts['open_dispatcher'])
             if any(opts[k]!=game.get(k,0 if k=='refresh_rate' else None) for k in ('scale','controllers','foveation','refresh_rate')):
                 raise ValueError('Settings changed since this build. Rebuild APK only first, or use Apply settings only.')
         except ValueError as exc:messagebox.showerror('Rebuild required',str(exc));return
@@ -266,7 +269,7 @@ class Wizard(DesktopUI, tk.Tk):
         except ValueError:messagebox.showerror('Invalid scale','Enter a number between 50 and 200.');return
         credentials=self.credentials();folder=self.build
         def work():
-            with self.bridge.connect(**credentials) as client:self.bridge.update_settings(folder,client,opts['scale'],opts['controllers'],opts['foveation'],opts['refresh_rate'],opts['headset'],opts['rect_fix'])
+            with self.bridge.connect(**credentials) as client:self.bridge.update_settings(folder,client,opts['scale'],opts['controllers'],opts['foveation'],opts['refresh_rate'],opts['headset'],opts['rect_fix'],opts['open_dispatcher'])
         self.run_job('Updating game settings…',work,lambda _:self.status.set('Settings saved. Restart the game on Frame.'))
 
     def repair_shortcut(self):

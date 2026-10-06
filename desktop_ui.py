@@ -56,6 +56,7 @@ class DesktopUI:
         self.vars['refresh_rate']=tk.StringVar(value='Default')
         self.vars['headset']=tk.StringVar(value='Default')
         self.rect_fix=tk.BooleanVar(value=False)
+        self.open_dispatcher=tk.BooleanVar(value=False)
         self.theme()
 
         side=tk.Frame(self,bg=NAV,width=204);side.pack(side='left',fill='y');side.pack_propagate(False)
@@ -270,6 +271,8 @@ class DesktopUI:
         ttk.Checkbutton(performance,text='Physical-controller compatibility',variable=self.controllers).pack(anchor='w')
         ttk.Checkbutton(performance,text='Disable unsupported Quest foveation',variable=self.foveation).pack(anchor='w')
         ttk.Checkbutton(performance,text='Fix black screen (swapchain rectangles; rebuild)',variable=self.rect_fix).pack(anchor='w')
+        ttk.Checkbutton(performance,text='Open-source OpenXR dispatcher (experimental; rebuild)',variable=self.open_dispatcher).pack(anchor='w')
+        ttk.Label(performance,text='Replaces OVR Port’s closed dispatcher with openxr-dispatcher-open. Logs gaps under the OpenXRDispatch logcat tag.',style='CardMuted.TLabel',wraplength=350).pack(anchor='w',pady=(0,5))
         self.responsive_cards(columns,game,performance)
         actions=ttk.Frame(page);actions.pack(fill='x',pady=(16,0))
         self.button(actions,'Open saved build…',self.open_build).pack(side='left')
